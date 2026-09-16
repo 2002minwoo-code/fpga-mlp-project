@@ -1,56 +1,61 @@
 // =============================================================
 //  mac_unit.sv  —  Serial MAC Unit (뉴런 1개 연산 엔진)
 //
-//  start 한 번 주면 n_feat 개의 feature × weight 를 순서대로
-//  곱해서 누적한다. 누적기는 bias 로 시작 →
-//      result = bias + Σ (feature[i] × weight[i])
+//  Dense layer로부터 데이터를 통째로(행렬/리스트) 받고,
+//  neuron_idx로 지금 계산할 뉴런의 줄을 골라 계산한다.
+//      result = bias[neuron_idx]
+//             + Σ_i ( weight[neuron_idx][i] × feature[i] )
+//
+//  - weight : 2차원 행렬 [뉴런][feature]  (뉴런 전체치)
+//  - feature: 1차원 리스트 [feature]       (지금 층 입력)
+//  - bias   : 1차원 리스트 [뉴런]           (뉴런 전체치)
+//  내부에서 feature 번호(idx)만 0→N-1 로 훑고,
+//  뉴런 번호(neuron_idx)는 계산 내내 고정.
 //
 //  제어: start / busy / done.  모든 데이터 signed.
-//
-//  ※ parameter는 팀 공통값(연습용 임시)을 기본으로 넣어둠.
-//    팀에서 확정되면 아래 숫자만 맞추면 됨. (혹은 상위 모듈에서
-//    parameter로 덮어쓰면 됨 — 값이 모듈 안에 박혀있지 않음)
 // =============================================================
 module mac_unit #(
     parameter int FEATURE_W = 8,    // feature 비트폭
     parameter int WEIGHT_W  = 8,    // weight 비트폭
     parameter int BIAS_W    = 32,   // bias 비트폭
     parameter int ACC_W     = 32,   // 누적기 비트폭
-    parameter int N_MAX     = 16    // 뉴런 1개 최대 입력 수
+    parameter int N_MAX     = 16,   // 뉴런 1개 최대 입력(feature) 수
+    parameter int N_NEURON  = 16    // 이 층의 뉴런 개수 (행렬의 줄 수)
 )(
     input  logic                        clk,
-    input  logic                        rst_n,     // active-low 리셋
-    input  logic                        start,     // 1펄스: 새 뉴런 연산 시작
-    input  logic [$clog2(N_MAX+1)-1:0]  n_feat,    // 이번 뉴런의 feature 개수
-    input  logic signed [BIAS_W-1:0]    bias,      // 누적기 초기값 (bias)
-    input  logic signed [FEATURE_W-1:0] feature,   // addr가 가리키는 feature
-    input  logic signed [WEIGHT_W-1:0]  weight,    // addr가 가리키는 weight
-    output logic [$clog2(N_MAX)-1:0]    addr,      // 읽을 feature/weight 인덱스
-    output logic                        busy,      // 연산 중이면 1
-    output logic                        done,      // 완료 시 1클럭 펄스
-    output logic signed [ACC_W-1:0]     result     // 최종 누적 결과
+    input  logic                        rst_n,
+    input  logic                        start,        // 1펄스: 뉴런 연산 시작
+    input  logic [$clog2(N_MAX+1)-1:0]  n_feat,       // 이번 층의 feature 개수
+    input  logic [$clog2(N_NEURON)-1:0] neuron_idx,   // 지금 계산할 뉴런 번호 (줄 선택)
+
+    // 통째로 받는 데이터
+    input  logic signed [FEATURE_W-1:0] i_mac_feature [0:N_MAX-1],            // [feature]
+    input  logic signed [WEIGHT_W-1:0]  i_mac_weight  [0:N_NEURON-1][0:N_MAX-1], // [뉴런][feature]
+    input  logic signed [BIAS_W-1:0]    i_mac_bias    [0:N_NEURON-1],         // [뉴런]
+
+    output logic                        busy,
+    output logic                        done,         // 완료 시 1클럭 펄스
+    output logic signed [ACC_W-1:0]     result        // 뉴런 출력
 );
 
     localparam int IDX_W  = $clog2(N_MAX);
-    localparam int PROD_W = FEATURE_W + WEIGHT_W;   // 곱셈 결과 폭 = 16
+    localparam int PROD_W = FEATURE_W + WEIGHT_W;
 
-    // ---- FSM 상태 ----
     typedef enum logic [1:0] {IDLE, RUN, FIN} state_t;
     state_t state;
 
-    logic [IDX_W-1:0]        idx;   // 지금 몇 번째 feature 처리 중인지
-    logic signed [ACC_W-1:0] acc;   // 누적기
+    logic [IDX_W-1:0]        idx;   // 지금 몇 번째 feature 처리 중인지 (뒤 인덱스)
+    logic signed [ACC_W-1:0] acc;
 
-    // ---- 곱셈 (signed × signed) ----
+    // 지금 뉴런(neuron_idx)의 idx번째 항을 골라서 곱셈
+    //   weight[neuron_idx][idx] × feature[idx]
     logic signed [PROD_W-1:0] product;
-    assign product = feature * weight;
+    assign product = i_mac_weight[neuron_idx][idx] * i_mac_feature[idx];
 
-    // ---- 곱을 누적기 폭으로 부호 확장 ----
+    // 곱을 누적기 폭으로 부호 확장
     logic signed [ACC_W-1:0] product_ext;
     assign product_ext = {{(ACC_W-PROD_W){product[PROD_W-1]}}, product};
 
-    // 현재 인덱스를 addr로 → 외부(memory_buffer)가 feature[idx]/weight[idx] 공급
-    assign addr = idx;
     assign busy = (state != IDLE);
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -61,29 +66,28 @@ module mac_unit #(
             done   <= 1'b0;
             result <= '0;
         end else begin
-            done <= 1'b0;   // done은 기본 0, FIN에서만 1클럭 올림
+            done <= 1'b0;
 
             case (state)
-                // --- 대기: start 오면 누적기를 bias로 초기화하고 시작 ---
-                //     (bias는 signed → acc에 자동 부호확장되어 실림)
+                // 시작: 누적기를 이 뉴런의 bias로 초기화
                 IDLE: begin
                     if (start) begin
-                        acc   <= bias;
+                        acc   <= i_mac_bias[neuron_idx];
                         idx   <= '0;
                         state <= RUN;
                     end
                 end
 
-                // --- 실행: 매 클럭 한 항씩 누적, 인덱스 증가 ---
+                // 실행: feature 번호만 0→n_feat-1 로 증가시키며 누적
                 RUN: begin
                     acc <= acc + product_ext;
                     if (idx == n_feat - 1)
-                        state <= FIN;        // 마지막 항까지 넣었으면 종료로
+                        state <= FIN;
                     else
                         idx <= idx + 1'b1;
                 end
 
-                // --- 완료: 결과 확정하고 done 펄스 ---
+                // 완료: 결과 확정 + done 펄스
                 FIN: begin
                     result <= acc;
                     done   <= 1'b1;

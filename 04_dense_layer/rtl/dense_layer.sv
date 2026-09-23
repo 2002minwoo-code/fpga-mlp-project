@@ -1,6 +1,8 @@
 // =============================================================
-// dense_layer.sv
+// dense_layer.sv (올림 나눗셈 버그 수정 및 포트 규격 반영)
 // =============================================================
+`timescale 1ns / 1ps
+
 module dense_layer #(
     parameter int FEATURE_W = 8,
     parameter int WEIGHT_W  = 8,
@@ -10,10 +12,12 @@ module dense_layer #(
     parameter int ACC_W     = 32,
     parameter int N_MAC     = 8,
 
+    // 올림 나눗셈 적용: (N_NEURON + N_MAC - 1) / N_MAC
     parameter int WMEM_DATA_W = N_MAC * WEIGHT_W,
     parameter int BMEM_DATA_W = N_MAC * BIAS_W,
-    parameter int WMEM_ADDR_W = $clog2((N_NEURON/N_MAC) * N_MAX),
-    parameter int BMEM_ADDR_W = (N_NEURON/N_MAC > 1) ? $clog2(N_NEURON/N_MAC) : 1
+    parameter int WMEM_ADDR_W = $clog2(((N_NEURON + N_MAC - 1) / N_MAC) * N_MAX),
+    parameter int BMEM_ADDR_W = (((N_NEURON + N_MAC - 1) / N_MAC) > 1) ? 
+                                $clog2((N_NEURON + N_MAC - 1) / N_MAC) : 1
 )(
     // System Signals
     input  logic i_clk,
@@ -40,8 +44,9 @@ module dense_layer #(
     output logic                    o_done
 );
 
-    localparam int N_GROUP_MAX = N_NEURON / N_MAC;
-    localparam int GIDX_W = (N_GROUP_MAX > 1) ? $clog2(N_GROUP_MAX) : 1;
+    // [수정] 그룹 수 올림 나눗셈 계산
+    localparam int N_GROUP_MAX = (N_NEURON + N_MAC - 1) / N_MAC;
+    localparam int GIDX_W      = (N_GROUP_MAX > 1) ? $clog2(N_GROUP_MAX) : 1;
 
     typedef enum logic [2:0] {
         S_IDLE      = 3'b000,
@@ -91,7 +96,7 @@ module dense_layer #(
     assign mac_clr = (state == S_MAC_RUN) && (feat_idx == 0);
     assign mac_en  = (state == S_MAC_RUN) && (feat_idx > 0) && (feat_idx < i_num_inputs);
 
-    // BRAM 주소 생성 및 데이터패스 제어
+    // BRAM 주소 제어 및 인덱스 카운터
     always_ff @(posedge i_clk or negedge i_rstn) begin
         if (!i_rstn) begin
             group_idx   <= '0;
@@ -153,7 +158,7 @@ module dense_layer #(
         end
     end
 
-    // MAC 하위 모듈 8개 인스턴스화
+    // MAC 유닛 8개 인스턴스화
     genvar g;
     generate
         for (g = 0; g < N_MAC; g++) begin : gen_mac

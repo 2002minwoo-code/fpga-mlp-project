@@ -10,7 +10,7 @@ module uart_tx #(
     input  logic       clk,
     input  logic       rst,
     input  logic       tx_start,
-    input  logic [7:0] tx_data,
+    input  logic [7:0] tx_data, //전송 또는 받아야 하는 데이터 값(8bit)
     output logic       tx, //실제 외부로 나가는 0또는 1
     output logic       tx_busy //지금 전송중인지 알리는 신호
 );
@@ -26,6 +26,8 @@ module uart_tx #(
     // Parameter must be >= 1. Default assumes 100MHz / 115200 baud.
     // Use the ACTUAL clock supplied to this module when setting this value.
     always_ff @(posedge clk) begin
+
+        // 초기화 신호
         if (rst) begin //rst는 reset신호가 '1'일 경우에 FSM상태 표시
             state        <= IDLE;
             bit_timer    <= '0;
@@ -35,6 +37,8 @@ module uart_tx #(
             tx_busy      <= 1'b0;
         end else begin
             case (state)
+
+                // 전송 요청을 기다리는 중
                 IDLE: begin
                     tx        <= 1'b1;
                     tx_busy   <= 1'b0;
@@ -47,6 +51,8 @@ module uart_tx #(
                         state        <= START;
                     end
                 end
+
+                // '전송을 시작한다'는 bit를 보내는 중
                 START: begin
                     if (bit_timer == LAST_COUNT) begin
                         bit_timer <= '0;
@@ -54,6 +60,8 @@ module uart_tx #(
                         state     <= DATA;
                     end else bit_timer <= bit_timer + 1'b1;
                 end
+
+                // 실제 데이터 8bit를 보내는 중
                 DATA: begin
                     if (bit_timer == LAST_COUNT) begin
                         bit_timer <= '0;
@@ -66,6 +74,8 @@ module uart_tx #(
                         end
                     end else bit_timer <= bit_timer + 1'b1;
                 end
+
+                // 전송을 마무리하는 정지 bit를 보내는 중
                 STOP: begin
                     if (bit_timer == LAST_COUNT) begin
                         bit_timer <= '0;
@@ -73,6 +83,8 @@ module uart_tx #(
                         state     <= IDLE;
                     end else bit_timer <= bit_timer + 1'b1;
                 end
+
+                // 대기 상태 신호로 진입
                 default: begin
                     state     <= IDLE;
                     tx        <= 1'b1;

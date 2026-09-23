@@ -1,0 +1,86 @@
+`timescale 1ns/1ps
+
+// 8N1 UART transmitter, LSB first. Single clock domain.
+// rst: synchronous active-high reset.
+// Pulse tx_start for ONE clock only when tx_busy == 0.
+// Requests while busy are discarded; there is no queue.
+module uart_tx #(
+    parameter integer CLKS_PER_BIT = 868 // 1bit를 전송하기 위한 clock수
+)(
+    input  logic       clk,
+    input  logic       rst,
+    input  logic       tx_start,
+    input  logic [7:0] tx_data,
+    output logic       tx, //실제 외부로 나가는 0또는 1
+    output logic       tx_busy //지금 전송중인지 알리는 신호
+);
+    localparam integer COUNT_W = (CLKS_PER_BIT <= 1) //COUNT_W 카운터의 비트 수 계산 즉 카운터 크기를 정하는 계산
+                                 ? 1 : $clog2(CLKS_PER_BIT);
+    localparam logic [COUNT_W-1:0] LAST_COUNT = COUNT_W'(CLKS_PER_BIT-1); // localparam logic [10:0] LAST_COUNT = 10'(867);
+    typedef enum logic [1:0] {IDLE, START, DATA, STOP} state_t; //UART의 동작단계에 이름 붙이기 자동으로 저장  IDLE  = 2'b00 START = 2'b01, DATA  = 2'b10, STOP  = 2'b11
+    state_t state;
+    logic [COUNT_W-1:0] bit_timer; //현재 bit를 몇 clock동안 유지했는지 세기
+    logic [2:0] bit_index; //데이터 중 몇 번째 bit를 보내는지 기억
+    logic [7:0] data_latched;
+
+    // Parameter must be >= 1. Default assumes 100MHz / 115200 baud.
+    // Use the ACTUAL clock supplied to this module when setting this value.
+    always_ff @(posedge clk) begin
+        if (rst) begin //rst는 reset신호가 '1'일 경우에 FSM상태 표시
+            state        <= IDLE;
+            bit_timer    <= '0;
+            bit_index    <= '0;
+            data_latched <= '0;
+            tx           <= 1'b1;
+            tx_busy      <= 1'b0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    tx        <= 1'b1;
+                    tx_busy   <= 1'b0;
+                    bit_timer <= '0;
+                    bit_index <= '0;
+                    if (tx_start) begin
+                        data_latched <= tx_data;
+                        tx           <= 1'b0; // Start immediately on acceptance
+                        tx_busy      <= 1'b1;
+                        state        <= START;
+                    end
+                end
+                START: begin
+                    if (bit_timer == LAST_COUNT) begin
+                        bit_timer <= '0;
+                        tx        <= data_latched[0];
+                        state     <= DATA;
+                    end else bit_timer <= bit_timer + 1'b1;
+                end
+                DATA: begin
+                    if (bit_timer == LAST_COUNT) begin
+                        bit_timer <= '0;
+                        if (bit_index == 3'd7) begin
+                            tx    <= 1'b1; // Stop bit
+                            state <= STOP;
+                        end else begin
+                            bit_index <= bit_index + 1'b1;
+                            tx        <= data_latched[bit_index + 3'd1];
+                        end
+                    end else bit_timer <= bit_timer + 1'b1;
+                end
+                STOP: begin
+                    if (bit_timer == LAST_COUNT) begin
+                        bit_timer <= '0;
+                        tx_busy   <= 1'b0;
+                        state     <= IDLE;
+                    end else bit_timer <= bit_timer + 1'b1;
+                end
+                default: begin
+                    state     <= IDLE;
+                    tx        <= 1'b1;
+                    tx_busy   <= 1'b0;
+                    bit_timer <= '0;
+                    bit_index <= '0;
+                end
+            endcase
+        end
+    end
+endmodule

@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
 // =============================================================
-// tb_dense_layer_golden.sv
+// tb_dense_layer.sv
 // Golden Reference Model 기반 dense_layer 무작위 난수 자동 검증 TB
 // =============================================================
 module tb_dense_layer_golden;

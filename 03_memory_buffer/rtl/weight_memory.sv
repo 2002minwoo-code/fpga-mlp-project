@@ -1,46 +1,40 @@
+// =============================================================
 // weight_memory.sv
-// Stores quantized signed weights for the whole MLP.
-// 현재 5-> 16-> 8-> 1 이면 weight 개수는 총 216개
-// N_FEATURES가 바뀌면 DEPTH도 자동으로 바뀜
-
+// Dense Layer interface 기준
+// 한 주소에서 N_MAC개의 weight를 packed 형태로 출력
+// =============================================================
 module weight_memory #(
     parameter int WEIGHT_W = 8,
+    parameter int N_NEURON = 16,
+    parameter int N_MAX    = 16,
+    parameter int N_MAC    = 8,
 
-    // [임시] 구조
-    parameter int N_FEATURES = 5,
-    parameter int N_HIDDEN1  = 16,
-    parameter int N_HIDDEN2  = 8,
-    parameter int N_OUTPUTS  = 1,
+    parameter int DATA_W = N_MAC * WEIGHT_W,
+    parameter int DEPTH  = (N_NEURON / N_MAC) * N_MAX,
+    parameter int ADDR_W = (DEPTH > 1) ? $clog2(DEPTH) : 1,
 
-    parameter int DEPTH =
-        (N_FEATURES * N_HIDDEN1) +
-        (N_HIDDEN1  * N_HIDDEN2) +
-        (N_HIDDEN2  * N_OUTPUTS),
-
-    parameter int ADDR_W =
-        (DEPTH <= 1) ? 1 : $clog2(DEPTH),
-
-    parameter string INIT_FILE = "weights.mem"
+    parameter INIT_FILE = "weights.mem"
 )(
-    input  logic                     clk,
-    input  logic                     rd_en,
-    input  logic [ADDR_W-1:0]        rd_addr,
+    input  logic              i_clk,
+    input  logic              i_rstn,
 
-    output logic signed [WEIGHT_W-1:0] rd_data
+    input  logic [ADDR_W-1:0] i_addr,
+    output logic [DATA_W-1:0] o_data
 );
 
-    logic signed [WEIGHT_W-1:0] mem [0:DEPTH-1];
+    logic [DATA_W-1:0] mem [0:DEPTH-1];
 
-    // Simulation / FPGA initialization
     initial begin
         if (INIT_FILE != "")
             $readmemh(INIT_FILE, mem);
     end
 
-    // Synchronous read
-    always_ff @(posedge clk) begin
-        if (rd_en)
-            rd_data <= mem[rd_addr];
+    // synchronous read
+    always_ff @(posedge i_clk or negedge i_rstn) begin
+        if (!i_rstn)
+            o_data <= '0;
+        else
+            o_data <= mem[i_addr];
     end
 
 endmodule

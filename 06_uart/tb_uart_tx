@@ -1,0 +1,103 @@
+`timescale 1ns/1ps
+module tb_uart_tx;
+    parameter integer CLKS_PER_BIT = 4; // Fast, readable simulation
+    logic clk = 0;
+    logic rst = 1;
+    logic tx_start = 0;
+    logic [7:0] tx_data = 0;
+    wire tx, tx_busy;
+    integer passed = 0;
+    integer n;
+    uart_tx #(.CLKS_PER_BIT(CLKS_PER_BIT)) dut (.*);
+    always #5 clk = ~clk; // 100 MHz TESTBENCH clock (not a board setting)
+
+    task automatic tick;
+        @(posedge clk);
+        #1; // Observe after nonblocking assignments
+    endtask
+
+    task automatic expect_output(input logic expected_tx,
+                                 input logic expected_busy);
+        if (tx !== expected_tx || tx_busy !== expected_busy)
+            $fatal(1, "FAIL t=%0t: tx=%b busy=%b expected=%b/%b",
+                   $time, tx, tx_busy, expected_tx, expected_busy);
+    endtask
+
+    task automatic apply_reset;
+        @(negedge clk);
+        rst = 1;
+        tx_start = 0;
+        tick();
+        expect_output(1, 0);
+        @(negedge clk);
+        rst = 0;
+        tick();
+        expect_output(1, 0);
+    endtask
+
+    // Independent expected frame: start, 8 data bits LSB first, stop.
+    // Check EVERY system-clock interval, not merely a loopback receiver.
+    task automatic send_and_check(input logic [7:0] value,
+                                  input bit inject_busy_request);
+        logic [9:0] frame;
+        integer cycle;
+        begin
+            frame = {1'b1, value, 1'b0};
+            @(negedge clk);
+            tx_data = value;
+            tx_start = 1;
+            tick();
+            for (cycle = 0; cycle < 10*CLKS_PER_BIT; cycle = cycle+1) begin
+                expect_output(frame[cycle/CLKS_PER_BIT], 1);
+                @(negedge clk);
+                // Change input after acceptance: output must use latched value.
+                tx_data = ~value;
+                tx_start = inject_busy_request && (cycle == CLKS_PER_BIT);
+                tick();
+            end
+            expect_output(1, 0);
+            @(negedge clk);
+            tx_start = 0;
+            repeat (2) begin
+                tick();
+                expect_output(1, 0); // Busy request must NOT be queued
+            end
+            passed = passed + 1;
+        end
+    endtask
+
+    // Abort transmission during start, data, and stop, then recover.
+    task automatic abort_and_recover(input integer offset);
+        @(negedge clk);
+        tx_data = 8'h55;
+        tx_start = 1;
+        tick();
+        @(negedge clk);
+        tx_start = 0;
+        repeat (offset) tick();
+        apply_reset();
+        send_and_check(8'hA5, 0);
+    endtask
+
+    initial begin
+        if (CLKS_PER_BIT < 1) $fatal(1, "CLKS_PER_BIT must be >= 1");
+        apply_reset();
+        send_and_check(8'hA5, 0);
+        send_and_check(8'h00, 0);
+        send_and_check(8'hFF, 0);
+        send_and_check(8'h55, 0);
+        send_and_check(8'hAA, 0);
+        send_and_check(8'h81, 1);
+        for (n = 0; n < 256; n = n+1)
+            send_and_check(n[7:0], 0);
+        abort_and_recover(0);
+        abort_and_recover(4*CLKS_PER_BIT);
+        abort_and_recover(9*CLKS_PER_BIT);
+        $display("PASS: %0d frames; all 256 bytes, bit durations, input latching, busy rejection and reset recovery. CLKS_PER_BIT=%0d", passed, CLKS_PER_BIT);
+        $finish;
+    end
+    initial begin
+        #(40000*CLKS_PER_BIT + 100000);
+        $fatal(1, "FAIL: simulation timeout");
+    end
+endmodule

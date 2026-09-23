@@ -1,5 +1,5 @@
 // =============================================================
-// dense_layer.sv (BRAM 추가 및 Read Latency 타이밍 교정 완료)
+// dense_layer.sv (2.BRAM 추가 및 Read Latency 타이밍 교정 완료)
 // =============================================================
 module dense_layer #(
     parameter int FEATURE_W = 8,

@@ -1,0 +1,5 @@
+// Layer1 EDGE-CASE test biases (signed, 2's complement)
+// Group 0 Bias
+0000000000000000000001f4ffffff9c000007d0000000000000000000000000
+// Group 1 Bias
+ffffffdeffffffddffffffd80000000000000001800002887ffffd7800000000

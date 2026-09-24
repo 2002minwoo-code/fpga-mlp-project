@@ -3,7 +3,6 @@
 // =============================================================
 // tb_layer2_buffer_check.sv
 // layer_buffer -> dense_layer(16->8) -> requantize (ReLU 없음)
-// 단독 검증용 tb (레이어1과 연결하지 않음, layer_buffer에 직접 write)
 // =============================================================
 module tb_layer2_buffer_check;
 

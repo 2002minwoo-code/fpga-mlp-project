@@ -17,7 +17,7 @@ parameter int WEIGHT_W  = 8;
 parameter int BIAS_W    = 32;
 parameter int HIDDEN_W  = 8;
 parameter int ACC_W     = 32;
-parameter int OUTPUT_W  = 16;
+parameter int OUTPUT_W  = 32;
 
 // 소수부 비트 수
 parameter int FEATURE_FRAC = 4;

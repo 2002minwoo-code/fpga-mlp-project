@@ -1,0 +1,158 @@
+`timescale 1ns/1ps
+`default_nettype none
+
+// Packet format:
+// A5 | payload bytes | XOR checksum
+//
+// First payload byte -> features_o[7:0].
+// Checksum includes payload bytes only.
+//
+// Requirements:
+// N_FEATURES >= 1
+// FEATURE_W >= 8 and a multiple of 8
+// CLKS_PER_BIT >= 2
+module uart_packet_rx #(
+    parameter integer N_FEATURES   = 5,
+    parameter integer FEATURE_W    = 8,
+    parameter integer CLK_FREQ_HZ  = 100_000_000,
+    parameter integer BAUD_RATE    = 115_200,
+    parameter integer CLKS_PER_BIT = CLK_FREQ_HZ / BAUD_RATE
+)(
+    input  wire                            clk,
+    input  wire                            rst_n,
+    input  wire                            rx_i,
+
+    output reg [N_FEATURES*FEATURE_W-1:0]   features_o,
+    output reg                             valid_o,
+    input  wire                            ready_i,
+    output reg                             error_o
+);
+
+    localparam integer BYTES_PER_FEATURE = FEATURE_W / 8;
+
+    localparam integer PAYLOAD_BYTES =
+        N_FEATURES * BYTES_PER_FEATURE;
+
+    localparam integer INDEX_W =
+        (PAYLOAD_BYTES <= 1) ? 1 : $clog2(PAYLOAD_BYTES);
+
+    localparam [7:0] SOF = 8'hA5;
+
+    localparam [1:0]
+        WAIT_SOF = 2'd0,
+        PAYLOAD  = 2'd1,
+        CHECKSUM = 2'd2,
+        HOLD     = 2'd3;
+
+    wire [7:0] byte_data;
+    wire       byte_valid;
+    wire       byte_error;
+
+    reg [1:0] state;
+    reg [INDEX_W-1:0] byte_index;
+    reg [7:0] checksum;
+    reg [N_FEATURES*FEATURE_W-1:0] features_work;
+
+    uart_rx #(
+        .CLK_FREQ_HZ (CLK_FREQ_HZ),
+        .BAUD_RATE   (BAUD_RATE),
+        .CLKS_PER_BIT(CLKS_PER_BIT)
+    ) u_uart_rx (
+        .clk    (clk),
+        .rst_n  (rst_n),
+        .rx_i   (rx_i),
+        .data_o (byte_data),
+        .valid_o(byte_valid),
+        .error_o(byte_error)
+    );
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state         <= WAIT_SOF;
+            byte_index    <= '0;
+            checksum      <= '0;
+            features_work <= '0;
+            features_o    <= '0;
+            valid_o       <= 1'b0;
+            error_o       <= 1'b0;
+        end else begin
+            // 패킷 오류는 1클록 펄스
+            error_o <= 1'b0;
+
+            // 이미 완성된 패킷은 UART 오류와 무관하게 전달
+            if (state == HOLD) begin
+                if (byte_error)
+                    error_o <= 1'b1;
+
+                // 이 클록에서 수신 측이 패킷을 받아 감
+                if (valid_o && ready_i) begin
+                    valid_o <= 1'b0;
+                    state   <= WAIT_SOF;
+                end
+
+            end else if (byte_error) begin
+                // 수신 중 UART 오류 발생: 미완성 패킷 폐기
+                error_o       <= 1'b1;
+                valid_o       <= 1'b0;
+                state         <= WAIT_SOF;
+                byte_index    <= '0;
+                checksum      <= '0;
+                features_work <= '0;
+
+            end else begin
+                case (state)
+                    WAIT_SOF: begin
+                        valid_o <= 1'b0;
+
+                        if (byte_valid && byte_data == SOF) begin
+                            byte_index    <= '0;
+                            checksum      <= '0;
+                            features_work <= '0;
+                            state         <= PAYLOAD;
+                        end
+                    end
+
+                    PAYLOAD: begin
+                        if (byte_valid) begin
+                            // 먼저 받은 바이트를 낮은 비트에 저장
+                            features_work[byte_index*8 +: 8]
+                                <= byte_data;
+
+                            checksum <= checksum ^ byte_data;
+
+                            if (byte_index == PAYLOAD_BYTES - 1) begin
+                                state <= CHECKSUM;
+                            end else begin
+                                byte_index <= byte_index + 1'b1;
+                            end
+                        end
+                    end
+
+                    CHECKSUM: begin
+                        if (byte_valid) begin
+                            if (byte_data == checksum) begin
+                                features_o <= features_work;
+                                valid_o    <= 1'b1;
+                                state      <= HOLD;
+                            end else begin
+                                error_o <= 1'b1;
+                                valid_o <= 1'b0;
+                                state   <= WAIT_SOF;
+                            end
+                        end
+                    end
+
+                    default: begin
+                        state      <= WAIT_SOF;
+                        valid_o    <= 1'b0;
+                        byte_index <= '0;
+                        checksum   <= '0;
+                    end
+                endcase
+            end
+        end
+    end
+
+endmodule
+
+`default_nettype wire

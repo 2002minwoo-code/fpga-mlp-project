@@ -1,0 +1,281 @@
+`timescale 1ns/1ps
+`default_nettype none
+
+
+// UART 결과 패킷 송신 모듈
+//
+// 주요 기능:
+// 1. MLP 결과 데이터를 내부에 저장
+// 2. 전체 결과를 8비트 단위로 분리
+// 3. 시작 표시값 A5 전송
+// 4. 결과 데이터를 하위 바이트부터 전송
+// 5. 모든 데이터 바이트의 XOR 체크섬 전송
+// 6. 마지막 바이트 송신 완료 시 done_o 출력
+//
+// 패킷 형식:
+// A5 | 결과 데이터 바이트들 | XOR 체크섬
+//
+// valid_i와 ready_o가 동시에 1인 클록에서
+// 새로운 결과 패킷을 수락한다.
+//
+// done_o는 전체 송신 완료 시 1클록 펄스
+//
+// OUTPUT_W는 8 이상의 8의 배수여야 한다.
+
+module uart_packet_tx #(
+parameter integer N_OUTPUTS    = 1,
+parameter integer OUTPUT_W     = 16,
+parameter integer CLK_FREQ_HZ  = 100_000_000,
+parameter integer BAUD_RATE    = 115_200,
+parameter integer CLKS_PER_BIT = CLK_FREQ_HZ / BAUD_RATE
+)(
+input  wire clk,
+input  wire rst_n,
+
+input  wire [N_OUTPUTS*OUTPUT_W-1:0] result_i,
+
+input  wire valid_i,
+output wire ready_o,
+
+output reg  done_o,
+output wire tx_o
+);
+
+// 전체 결과 벡터의 비트 수
+localparam integer RESULT_VEC_W =
+N_OUTPUTS * OUTPUT_W;
+
+// 결과 데이터의 전체 바이트 수
+localparam integer PAYLOAD_BYTES =
+RESULT_VEC_W / 8;
+
+// 바이트 번호를 저장하는 카운터 크기
+localparam integer INDEX_W =
+(PAYLOAD_BYTES + 2 <= 2)
+? 1 : $clog2(PAYLOAD_BYTES + 2);
+
+// 마지막 바이트는 XOR 체크섬
+localparam [INDEX_W-1:0] LAST_INDEX =
+PAYLOAD_BYTES + 1;
+
+// 패킷 송신 상태 정의
+localparam [1:0]
+IDLE      = 2'd0,
+SEND_BYTE = 2'd1,
+WAIT_BUSY = 2'd2,
+WAIT_END  = 2'd3;
+
+reg [1:0] state;
+
+// 현재 송신 중인 패킷 바이트 번호
+reg [INDEX_W-1:0] byte_index;
+
+// 송신할 전체 결과를 보관
+reg [RESULT_VEC_W-1:0] result_latched;
+
+// 송신할 XOR 체크섬
+reg [7:0] checksum_latched;
+
+// 하위 송신기에 전달할 8비트 데이터
+reg [7:0] tx_data;
+
+// 하위 송신기 제어 신호
+wire tx_busy;
+wire tx_start;
+
+// ----------------------------------------
+// 전체 결과의 XOR 체크섬 계산 함수
+// ----------------------------------------
+
+function automatic [7:0] xor_payload(
+input [RESULT_VEC_W-1:0] payload
+);
+
+integer i;
+reg [7:0] value;
+
+begin
+value = 8'h00;
+
+// 모든 결과 바이트를 차례로 XOR
+for (i = 0; i < PAYLOAD_BYTES; i = i + 1) begin
+value = value ^ payload[i*8 +: 8];
+end
+
+xor_payload = value;
+end
+
+endfunction
+
+// ----------------------------------------
+// 송신 제어 신호
+// ----------------------------------------
+
+// 새로운 패킷을 받을 수 있으면 1
+assign ready_o =
+rst_n && (state == IDLE);
+
+// 바이트 송신 시작 신호
+// 하위 송신기가 대기 상태일 때만 발생
+assign tx_start =
+rst_n &&
+(state == SEND_BYTE) &&
+!tx_busy;
+
+// ----------------------------------------
+// 현재 전송할 바이트 선택
+// ----------------------------------------
+
+always @* begin
+
+// 첫 번째 바이트는 시작 표시값
+if (byte_index == 0) begin
+
+tx_data = 8'hA5;
+
+end else if (byte_index <= PAYLOAD_BYTES) begin
+
+// 두 번째 바이트부터 결과 데이터를 전송
+// 하위 바이트부터 차례대로 추출
+tx_data = result_latched[
+(byte_index - 1'b1)*8 +: 8
+];
+
+end else begin
+
+// 마지막 바이트는 XOR 체크섬
+tx_data = checksum_latched;
+
+end
+end
+
+// ----------------------------------------
+// 실제 UART 바이트 송신기
+// ----------------------------------------
+
+uart_tx #(
+.CLKS_PER_BIT(CLKS_PER_BIT)
+) u_uart_tx (
+.clk     (clk),
+.rst     (!rst_n),
+.tx_start(tx_start),
+.tx_data (tx_data),
+.tx      (tx_o),
+.tx_busy (tx_busy)
+);
+
+// ----------------------------------------
+// 패킷 송신 상태기계
+// ----------------------------------------
+
+always @(posedge clk or negedge rst_n) begin
+
+if (!rst_n) begin
+state            <= IDLE;
+byte_index       <= '0;
+result_latched   <= '0;
+checksum_latched <= '0;
+done_o           <= 1'b0;
+
+end else begin
+
+// 송신 완료 신호는 기본적으로 0
+done_o <= 1'b0;
+
+case (state)
+
+// --------------------------------
+// 새로운 결과 패킷을 기다리는 상태
+// --------------------------------
+
+IDLE: begin
+
+if (valid_i) begin
+
+// 송신할 결과 데이터를 내부에 저장
+result_latched <= result_i;
+
+// 전체 결과의 체크섬 계산
+checksum_latched <= xor_payload(result_i);
+
+// 시작 표시값부터 송신
+byte_index <= '0;
+
+state <= SEND_BYTE;
+
+end
+end
+
+// --------------------------------
+// 현재 바이트의 송신 시작
+// --------------------------------
+
+SEND_BYTE: begin
+
+if (!tx_busy) begin
+
+// 이 클록에서 tx_start가 전달됨
+// 하위 송신기가 요청을 수락
+state <= WAIT_BUSY;
+
+end
+end
+
+// --------------------------------
+// 하위 송신기가 시작했는지 확인
+// --------------------------------
+
+WAIT_BUSY: begin
+
+if (tx_busy) begin
+
+// 송신 중 상태가 되었으므로
+// 현재 바이트의 송신 완료를 기다림
+state <= WAIT_END;
+
+end
+end
+
+// --------------------------------
+// 현재 바이트의 송신 완료 대기
+// --------------------------------
+
+WAIT_END: begin
+
+if (!tx_busy) begin
+
+if (byte_index == LAST_INDEX) begin
+
+// 마지막 체크섬까지 송신 완료
+done_o <= 1'b1;
+
+// 다음 패킷을 받을 준비
+state <= IDLE;
+
+end else begin
+
+// 다음 패킷 바이트로 이동
+byte_index <= byte_index + 1'b1;
+
+state <= SEND_BYTE;
+
+end
+end
+end
+
+// --------------------------------
+// 비정상 상태에서 복구
+// --------------------------------
+
+default: begin
+state      <= IDLE;
+byte_index <= '0;
+end
+
+endcase
+end
+end
+
+endmodule
+
+`default_nettype wire

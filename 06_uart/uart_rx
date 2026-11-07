@@ -38,9 +38,9 @@ module uart_rx #(
     parameter integer BAUD_RATE    = 115_200,
     parameter integer CLKS_PER_BIT = CLK_FREQ_HZ / BAUD_RATE
 )(
-    input  logic       clk,      // FPGA 시스템 클록
-    input  logic       rst_n,    // 초기화 신호 (Active Low)
-    input  logic       rx_i,     // UART 직렬 입력
+    input wire logic       clk,      // FPGA 시스템 클록
+    input wire logic       rst_n,    // 초기화 신호 (Active Low)
+    input wire logic       rx_i,     // UART 직렬 입력
 
     output logic [7:0] data_o,   // 수신 완료된 데이터
     output logic       valid_o,  // 정상 수신 완료 신호
